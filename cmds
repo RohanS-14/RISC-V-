@@ -1,0 +1,120 @@
+##################################################################################################
+
+**#library creation**
+
+create_lib -technology ../../ref/tech/saed32nm_1p9m.tf -ref_libs \
+{../../ref/CLIBs/saed32_1p9m_tech.ndm ../../ref/CLIBs/saed32_hvt.ndm \
+../../ref/CLIBs/saed32_lvt.ndm ../../ref/CLIBs/saed32_rvt.ndm \
+../../ref/CLIBs/saed32_sram_lp.ndm} risc_v
+#reading netlist and SDC
+read_verilog ../netlist/risc.v
+read_sdc ../constraints/risc_sdc2.sdc
+
+##################################################################################################
+**#floor plan** 
+
+link_design
+initialize_floorplan -side_ratio {2 3} -core_offset {2}
+
+##################################################################################################
+**#parasitic reading**
+read_parasitic_tech -name {new_model} -tlup
+{../../ref/tech/saed32nm_1p9m_Cmin.lv.tluplus} -layermap \
+{../../ref/tech/saed32nm_tf_itf_tluplus.map}
+current_corner default
+set_parasitic_parameters -early_spec new_model -late_spec new_model
+set_process_number 0.99 -corners default
+set_temperature 125 -corners default
+set_voltage 0.75 -corners default
+current_mode default
+read_sdc ../constraints/risc_sdc2.sdc
+set_scenario_status default -active true -setup true -hold true -max_transition true -
+max_capacitance true -min_capacitance true -leakage_power true \
+-dynamic_power true
+
+##################################################################################################
+**#pg**
+set_app_options -name plan.place.auto_create_blockages -value auto
+create_placement -floorplan
+place_pins -self
+
+#use GUI to create a basic pg prototyping , taskmanager -> PG planning -> PG prototyping -> M9 20% M8 20% -> Apply
+
+check_pg_drc
+check_pg_connectivity
+check_pg_missing_vias
+
+##################################################################################################
+
+**#placement**
+create_placement -congestion -congestion_effort high 
+
+#re run until good congestion is obtained
+#set_app_options -name place.coarse.max_density -value 0.4
+#set_app_options -name place.coarse.pin_density_aware -value true
+#create_placement and routing blockages 
+
+set_app_options place_opt.place.congestion_effort -value high
+
+place_opt 
+#runs all the steps initial_place -> initial_drc -> initial_opt -> final_place ->final_opt
+
+check_legality -verbos
+report_congestion
+report_utilization
+report_constraints
+
+##################################################################################################
+
+**# cts stage** 
+
+#remove unnessary routing blockages 
+
+check_design -checks pre_clock_tree_stage
+set_app_options -name time.remove_clock_reconvergence_pessimism -value true
+set_app_options -name clock_opt.flow.enable_ccd -value true
+set_app_options -name clock_opt.place.congestion_effort -value high
+set_app_options -name cts.optimize.enable_congestion_aware_ndr_promotion -value true
+
+#congestion-aware NDR promotion for SI
+#source ./scripts/ndr.tcl
+
+report_qor -summary
+report_clock_settings
+
+clock_opt
+#performs clock_opt and global_routing
+
+report_timing
+report_constraints
+report_qor -summary
+save_block -as after_cts
+
+##################################################################################################
+
+**#routing**
+
+check_design -checks pre_route_stage
+set_app_options -name route.track.timing_driven -value true
+set_app_options -name route.track.crosstalk_driven -value true
+set_app_options -name route.detail.timing_driven -value true
+set_routing_rule all -clear -default_rule -min_routing_layer 1 -max_routing_layer 9
+
+route_auto -max_detail_route_iterations 30
+route_eco
+
+#to optimize the design use command route_opt
+
+check_lvs
+#also check for drc violations
+ 
+save_block -as after_routing
+
+##################################################################################################
+
+write_script -force -format icc2 -output ../reports/risc_spef
+write_parasitics -output ../reports/spef_generation_1
+write_sdf ../results/risc.sdf
+write_verilog ../results/risc.v
+write_gds ../results/risc.gds
+write_sdc -output ../results/risc.sd
